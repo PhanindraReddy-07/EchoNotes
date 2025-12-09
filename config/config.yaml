@@ -1,0 +1,36 @@
+# EchoNotes Configuration
+# Windows/VS Code Version
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  chunk_size: 4096
+  format: int16
+
+speech:
+  model_size: medium  # small (~50MB), medium (~500MB), large (~1.8GB)
+  language: en-us
+
+nlp:
+  use_gpu: false  # Set to true if you have NVIDIA GPU with CUDA
+  summarizer_model: sshleifer/distilbart-cnn-12-6
+  summarizer_model_small: google/flan-t5-small
+  max_summary_length: 150
+  min_summary_length: 50
+  use_extractive_fallback: true  # Use simple extraction if transformers fail
+
+document:
+  default_format: markdown
+  include_entities: true
+  include_summary: true
+  include_timestamps: true
+
+paths:
+  models_dir: models
+  output_dir: output
+  temp_dir: temp
+
+performance:
+  low_memory_mode: false  # Set to true for <8GB RAM
+  batch_size: 4           # Reduce if running out of memory
+  num_threads: 4          # Adjust based on CPU cores

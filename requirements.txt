@@ -1,0 +1,49 @@
+# EchoNotes Windows Requirements
+# ================================
+# Install with: pip install -r requirements.txt
+
+# Core Speech Recognition
+vosk==0.3.45
+
+# Audio Processing
+sounddevice==0.4.6
+soundfile==0.12.1
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+
+# NLP Processing
+nltk==3.8.1
+transformers>=4.35.0
+torch>=2.0.0
+sentencepiece>=0.1.99
+
+# Document Generation
+python-docx==1.1.0
+Pillow>=10.0.0
+
+# Configuration
+pyyaml>=6.0.1
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Development (optional)
+black>=23.0.0
+isort>=5.12.0
+
+# ================================
+# Windows Installation Notes:
+# ================================
+# 
+# 1. PyAudio Alternative:
+#    We use sounddevice instead of PyAudio - it's easier to install on Windows
+#    and doesn't require Visual Studio Build Tools.
+#
+# 2. PyTorch CPU-only (smaller download):
+#    pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# 3. If you have NVIDIA GPU:
+#    pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# 4. Vosk models are downloaded automatically by setup_models.py
