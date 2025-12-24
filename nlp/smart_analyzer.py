@@ -104,7 +104,12 @@ class SmartAnalyzer:
     - TextRank for sentence extraction
     - Noun phrase patterns for concepts
     - Template-based question generation
+    - **ML Model for sentence importance** (custom trained)
     """
+    
+    # Flag for ML model availability
+    _ml_model = None
+    _ml_model_loaded = False
     
     # Expanded stopwords
     STOPWORDS = {
@@ -195,8 +200,44 @@ class SmartAnalyzer:
         'User Experience': ['user', 'interface', 'feature', 'design', 'experience', 'usability', 'interaction'],
     }
     
-    def __init__(self):
-        pass
+    def __init__(self, use_ml_model: bool = True):
+        """
+        Initialize SmartAnalyzer.
+        
+        Args:
+            use_ml_model: Whether to use ML model for sentence scoring
+        """
+        self.use_ml_model = use_ml_model
+        self._load_ml_model()
+    
+    def _load_ml_model(self):
+        """Load ML model if available"""
+        if not self.use_ml_model:
+            return
+        
+        if SmartAnalyzer._ml_model_loaded:
+            return
+        
+        try:
+            from ml.sentence_classifier import SentenceImportanceClassifier
+            
+            classifier = SentenceImportanceClassifier()
+            model_path = classifier.MODEL_DIR / classifier.DEFAULT_MODEL
+            
+            if model_path.exists():
+                classifier.load_model()
+                SmartAnalyzer._ml_model = classifier
+                SmartAnalyzer._ml_model_loaded = True
+                print("[SmartAnalyzer] ML model loaded successfully")
+            else:
+                print("[SmartAnalyzer] ML model not found. Run 'python train_model.py' to train.")
+                SmartAnalyzer._ml_model_loaded = True  # Don't retry
+        except ImportError:
+            print("[SmartAnalyzer] ML module not available")
+            SmartAnalyzer._ml_model_loaded = True
+        except Exception as e:
+            print(f"[SmartAnalyzer] ML model error: {e}")
+            SmartAnalyzer._ml_model_loaded = True
     
     def analyze(self, text: str, title: str = "Document") -> ContentAnalysis:
         """
@@ -217,8 +258,8 @@ class SmartAnalyzer:
         # Calculate TF-IDF scores
         tfidf_scores = self._calculate_tfidf(sentences)
         
-        # Extract components
-        key_sentences = self._extract_key_sentences(sentences, tfidf_scores, num=5)
+        # Extract components (pass clean_text as document for ML scoring)
+        key_sentences = self._extract_key_sentences(sentences, tfidf_scores, num=5, document=clean_text)
         executive_summary = self._generate_summary(sentences, tfidf_scores)
         concepts = self._extract_concepts(clean_text, sentences, tfidf_scores)
         questions = self._generate_questions(concepts, sentences)
@@ -364,9 +405,44 @@ class SmartAnalyzer:
         sentence: str,
         position: int,
         total: int,
+        tfidf: Dict[str, float],
+        document: str = ""
+    ) -> float:
+        """
+        Score a sentence's importance using hybrid approach:
+        - ML model score (if available) - 50% weight
+        - Rule-based score - 50% weight
+        """
+        # Try ML model first
+        ml_score = None
+        if SmartAnalyzer._ml_model is not None and document:
+            try:
+                ml_score = SmartAnalyzer._ml_model.predict(
+                    sentence, document, position, total
+                )
+            except Exception as e:
+                pass  # Fall back to rule-based
+        
+        # Rule-based scoring
+        rule_score = self._rule_based_score(sentence, position, total, tfidf)
+        
+        # Combine scores
+        if ml_score is not None:
+            # Hybrid: 50% ML + 50% rule-based
+            final_score = 0.5 * ml_score + 0.5 * rule_score
+        else:
+            final_score = rule_score
+        
+        return min(final_score, 1.0)
+    
+    def _rule_based_score(
+        self,
+        sentence: str,
+        position: int,
+        total: int,
         tfidf: Dict[str, float]
     ) -> float:
-        """Score a sentence's importance"""
+        """Original rule-based sentence scoring"""
         score = 0.0
         words = self._tokenize(sentence)
         
@@ -411,16 +487,17 @@ class SmartAnalyzer:
         self,
         sentences: List[str],
         tfidf: Dict[str, float],
-        num: int = 5
+        num: int = 5,
+        document: str = ""
     ) -> List[str]:
-        """Extract most important sentences"""
+        """Extract most important sentences using hybrid ML + rule-based scoring"""
         if len(sentences) <= num:
             return sentences
         
         # Score all sentences
         scored = []
         for i, sent in enumerate(sentences):
-            score = self._score_sentence(sent, i, len(sentences), tfidf)
+            score = self._score_sentence(sent, i, len(sentences), tfidf, document)
             scored.append((score, i, sent))
         
         # Get top sentences by score

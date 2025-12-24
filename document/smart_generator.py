@@ -858,176 +858,152 @@ class SmartDocumentGenerator:
         include_full: bool,
         ai_content: Optional[GeneratedContent] = None
     ) -> str:
-        """Generate PDF document"""
+        """Generate PDF document - simplified robust version"""
         try:
             from fpdf import FPDF
         except ImportError:
             print("⚠️ PDF requires fpdf2: pip install fpdf2")
             return self._generate_text(analysis, path.replace('.pdf', '.txt'), include_full, ai_content)
         
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        
-        # Set consistent margins - important!
-        pdf.set_left_margin(20)
-        pdf.set_right_margin(20)
-        
-        # Calculate effective width
-        effective_width = pdf.w - 40  # page width minus margins
-        
-        # Helper to safely add text
-        def safe_text(text, max_len=300):
+        # Ultra-safe text cleaner
+        def clean(text, maxlen=200):
             if not text:
-                return "N/A"
-            text = str(text)[:max_len]
-            # Remove problematic characters and encode to latin-1
-            try:
-                text = text.encode('latin-1', 'replace').decode('latin-1')
-            except:
-                text = text.encode('ascii', 'replace').decode('ascii')
-            # Remove any remaining problematic chars
-            text = ''.join(c if ord(c) < 256 else '?' for c in text)
-            return text if text.strip() else "N/A"
-        
-        def add_section_title(title):
-            pdf.set_font('Helvetica', 'B', 14)
-            pdf.cell(effective_width, 10, title, ln=True)
-            pdf.ln(2)
-        
-        def add_paragraph(text, font_size=10, italic=False):
-            style = 'I' if italic else ''
-            pdf.set_font('Helvetica', style, font_size)
-            try:
-                pdf.multi_cell(effective_width, 5, safe_text(text, 500))
-            except:
-                pdf.cell(effective_width, 5, safe_text(text, 100), ln=True)
-            pdf.ln(2)
-        
-        # Title
-        pdf.set_font('Helvetica', 'B', 20)
-        pdf.cell(effective_width, 12, safe_text(analysis.title, 80), ln=True, align='C')
-        
-        pdf.set_font('Helvetica', 'I', 10)
-        pdf.cell(effective_width, 8, f"Words: {analysis.word_count} | Reading: {analysis.reading_time_minutes} min", ln=True, align='C')
-        pdf.ln(8)
-        
-        # Executive Summary
-        add_section_title("Executive Summary")
-        add_paragraph(analysis.executive_summary)
-        pdf.ln(4)
-        
-        # AI: Simple Explanation
-        if ai_content and ai_content.simplified_explanation:
-            add_section_title("Simple Explanation")
-            add_paragraph(ai_content.simplified_explanation)
-            pdf.ln(4)
-        
-        # AI: ELI5
-        if ai_content and ai_content.eli5_explanation:
-            add_section_title("Explain Like I'm 5")
-            add_paragraph(ai_content.eli5_explanation, italic=True)
-            pdf.ln(4)
-        
-        # Key Takeaways
-        if ai_content and ai_content.key_takeaways:
-            add_section_title("Key Takeaways")
-            pdf.set_font('Helvetica', '', 10)
-            for i, takeaway in enumerate(ai_content.key_takeaways[:5], 1):
-                text = f"{i}. {safe_text(takeaway, 150)}"
-                try:
-                    pdf.multi_cell(effective_width, 5, text)
-                except:
-                    pdf.cell(effective_width, 5, text[:80], ln=True)
-            pdf.ln(4)
-        
-        # Key Sentences
-        add_section_title("Key Sentences")
-        pdf.set_font('Helvetica', '', 10)
-        for i, sent in enumerate(analysis.key_sentences[:5], 1):
-            text = f"{i}. {safe_text(sent, 200)}"
-            try:
-                pdf.multi_cell(effective_width, 5, text)
-            except:
-                pdf.cell(effective_width, 5, text[:80], ln=True)
-            pdf.ln(1)
-        pdf.ln(4)
-        
-        # Key Concepts
-        add_section_title("Key Concepts")
-        for concept in analysis.concepts[:6]:
-            pdf.set_font('Helvetica', 'B', 11)
-            pdf.cell(effective_width, 6, safe_text(concept.term, 40), ln=True)
-            pdf.set_font('Helvetica', '', 9)
-            add_paragraph(concept.definition, font_size=9)
-        pdf.ln(4)
-        
-        # New page for questions
-        pdf.add_page()
-        
-        # Study Questions
-        add_section_title("Study Questions")
-        for i, q in enumerate(analysis.questions[:6], 1):
-            pdf.set_font('Helvetica', 'B', 10)
-            difficulty = (q.difficulty or "medium").upper()
-            question_text = f"{i}. [{difficulty}] {safe_text(q.question, 120)}"
-            try:
-                pdf.multi_cell(effective_width, 5, question_text)
-            except:
-                pdf.cell(effective_width, 5, question_text[:70], ln=True)
-            
-            if q.answer_hint:
-                pdf.set_font('Helvetica', 'I', 9)
-                hint_text = f"Hint: {safe_text(q.answer_hint, 100)}"
-                try:
-                    pdf.multi_cell(effective_width, 4, hint_text)
-                except:
-                    pdf.cell(effective_width, 4, hint_text[:60], ln=True)
-            pdf.ln(3)
-        
-        # FAQ
-        if ai_content and ai_content.faq:
-            pdf.ln(4)
-            add_section_title("Frequently Asked Questions")
-            for i, qa in enumerate(ai_content.faq[:4], 1):
-                q_text = qa.get('q', '') if isinstance(qa, dict) else str(qa)
-                a_text = qa.get('a', '') if isinstance(qa, dict) else ''
-                
-                pdf.set_font('Helvetica', 'B', 10)
-                try:
-                    pdf.multi_cell(effective_width, 5, f"Q{i}: {safe_text(q_text, 100)}")
-                except:
-                    pdf.cell(effective_width, 5, f"Q{i}: {safe_text(q_text, 60)}", ln=True)
-                
-                pdf.set_font('Helvetica', '', 9)
-                try:
-                    pdf.multi_cell(effective_width, 4, f"A: {safe_text(a_text, 150)}")
-                except:
-                    pdf.cell(effective_width, 4, f"A: {safe_text(a_text, 60)}", ln=True)
-                pdf.ln(2)
-        
-        # Related Topics
-        pdf.ln(4)
-        add_section_title("Related Topics")
-        pdf.set_font('Helvetica', '', 10)
-        topics = ", ".join(analysis.related_topics[:8])
-        pdf.cell(effective_width, 5, safe_text(topics, 150), ln=True)
-        
-        # Footer
-        pdf.ln(10)
-        pdf.set_font('Helvetica', 'I', 8)
-        if ai_content:
-            pdf.cell(effective_width, 4, "* This document includes AI-generated content", ln=True, align='C')
-        pdf.cell(effective_width, 4, "Generated by EchoNotes", ln=True, align='C')
+                return ""
+            s = str(text)[:maxlen]
+            # Keep only basic ASCII printable chars
+            s = ''.join(c if 32 <= ord(c) < 127 else ' ' for c in s)
+            s = ' '.join(s.split())  # normalize whitespace
+            return s
         
         try:
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            pdf.add_page()
+            
+            # Title
+            pdf.set_font('Helvetica', 'B', 18)
+            pdf.cell(0, 10, clean(analysis.title, 60), ln=True, align='C')
+            pdf.set_font('Helvetica', '', 10)
+            pdf.cell(0, 6, f"Words: {analysis.word_count} | Reading time: {analysis.reading_time_minutes} min", ln=True, align='C')
+            pdf.ln(10)
+            
+            # Executive Summary
+            pdf.set_font('Helvetica', 'B', 12)
+            pdf.cell(0, 8, "EXECUTIVE SUMMARY", ln=True)
+            pdf.set_font('Helvetica', '', 10)
+            summary = clean(analysis.executive_summary, 600)
+            for line in [summary[i:i+90] for i in range(0, len(summary), 90)]:
+                pdf.cell(0, 5, line, ln=True)
+            pdf.ln(5)
+            
+            # Simple Explanation (AI)
+            if ai_content and ai_content.simplified_explanation:
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, "SIMPLE EXPLANATION", ln=True)
+                pdf.set_font('Helvetica', '', 10)
+                explanation = clean(ai_content.simplified_explanation, 400)
+                for line in [explanation[i:i+90] for i in range(0, len(explanation), 90)]:
+                    pdf.cell(0, 5, line, ln=True)
+                pdf.ln(5)
+            
+            # ELI5 (AI)
+            if ai_content and ai_content.eli5_explanation:
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, "EXPLAIN LIKE I'M 5", ln=True)
+                pdf.set_font('Helvetica', 'I', 10)
+                eli5 = clean(ai_content.eli5_explanation, 300)
+                for line in [eli5[i:i+90] for i in range(0, len(eli5), 90)]:
+                    pdf.cell(0, 5, line, ln=True)
+                pdf.ln(5)
+            
+            # Key Takeaways (AI)
+            if ai_content and ai_content.key_takeaways:
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, "KEY TAKEAWAYS", ln=True)
+                pdf.set_font('Helvetica', '', 10)
+                for i, t in enumerate(ai_content.key_takeaways[:5], 1):
+                    pdf.cell(0, 5, f"{i}. {clean(t, 80)}", ln=True)
+                pdf.ln(5)
+            
+            # Key Sentences
+            pdf.set_font('Helvetica', 'B', 12)
+            pdf.cell(0, 8, "KEY SENTENCES", ln=True)
+            pdf.set_font('Helvetica', '', 10)
+            for i, s in enumerate(analysis.key_sentences[:5], 1):
+                pdf.cell(0, 5, f"{i}. {clean(s, 85)}", ln=True)
+            pdf.ln(5)
+            
+            # Key Concepts
+            pdf.set_font('Helvetica', 'B', 12)
+            pdf.cell(0, 8, "KEY CONCEPTS", ln=True)
+            for c in analysis.concepts[:6]:
+                pdf.set_font('Helvetica', 'B', 10)
+                pdf.cell(0, 5, f"- {clean(c.term, 30)}", ln=True)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.cell(0, 4, f"  {clean(c.definition, 80)}", ln=True)
+            pdf.ln(5)
+            
+            # Study Questions
+            pdf.add_page()
+            pdf.set_font('Helvetica', 'B', 12)
+            pdf.cell(0, 8, "STUDY QUESTIONS", ln=True)
+            for i, q in enumerate(analysis.questions[:6], 1):
+                pdf.set_font('Helvetica', 'B', 10)
+                diff = (q.difficulty or "medium").upper()
+                pdf.cell(0, 5, f"{i}. [{diff}] {clean(q.question, 70)}", ln=True)
+                if q.answer_hint:
+                    pdf.set_font('Helvetica', 'I', 9)
+                    pdf.cell(0, 4, f"   Hint: {clean(q.answer_hint, 60)}", ln=True)
+            pdf.ln(5)
+            
+            # FAQ (AI)
+            if ai_content and ai_content.faq:
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, "FAQ", ln=True)
+                for i, qa in enumerate(ai_content.faq[:4], 1):
+                    q = qa.get('q', '') if isinstance(qa, dict) else str(qa)
+                    a = qa.get('a', '') if isinstance(qa, dict) else ''
+                    pdf.set_font('Helvetica', 'B', 10)
+                    pdf.cell(0, 5, f"Q{i}: {clean(q, 70)}", ln=True)
+                    pdf.set_font('Helvetica', '', 9)
+                    pdf.cell(0, 4, f"A: {clean(a, 80)}", ln=True)
+                    pdf.ln(2)
+                pdf.ln(3)
+            
+            # Vocabulary (AI)
+            if ai_content and ai_content.vocabulary:
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, "VOCABULARY", ln=True)
+                for v in ai_content.vocabulary[:6]:
+                    term = v.get('term', '') if isinstance(v, dict) else str(v)
+                    meaning = v.get('meaning', '') if isinstance(v, dict) else ''
+                    pdf.set_font('Helvetica', 'B', 10)
+                    pdf.cell(40, 5, clean(term, 25))
+                    pdf.set_font('Helvetica', '', 9)
+                    pdf.cell(0, 5, clean(meaning, 60), ln=True)
+                pdf.ln(3)
+            
+            # Related Topics
+            pdf.set_font('Helvetica', 'B', 12)
+            pdf.cell(0, 8, "RELATED TOPICS", ln=True)
+            pdf.set_font('Helvetica', '', 10)
+            topics = ", ".join(clean(t, 20) for t in analysis.related_topics[:6])
+            pdf.cell(0, 5, topics, ln=True)
+            
+            # Footer
+            pdf.ln(10)
+            pdf.set_font('Helvetica', 'I', 8)
+            if ai_content:
+                pdf.cell(0, 4, "* Includes AI-generated content", ln=True, align='C')
+            pdf.cell(0, 4, "Generated by EchoNotes", ln=True, align='C')
+            
             pdf.output(path)
+            return path
+            
         except Exception as e:
-            print(f"[PDF] Error saving: {e}")
-            # Fallback to text
+            print(f"[PDF] Generation failed: {e}, falling back to text")
+            # Fallback to text file
             return self._generate_text(analysis, path.replace('.pdf', '.txt'), include_full, ai_content)
-        
-        return path
     
     def _generate_docx(
         self,
