@@ -77,6 +77,13 @@ from .summarizer import (
     MeetingPatternSummarizer
 )
 
+from .translator import (
+    OfflineTranslator,
+    TranslationResult,
+    get_translator,
+    detect_language
+)
+
 __all__ = [
     # Preprocessing
     'TextPreprocessor',
@@ -103,6 +110,12 @@ __all__ = [
     'ClusteringSummarizer',
     'TransformerSummarizer',
     'MeetingPatternSummarizer',
+    
+    # Translation (NEW - Offline multilingual)
+    'OfflineTranslator',
+    'TranslationResult',
+    'get_translator',
+    'detect_language',
 ]
 
 __version__ = '1.0.0'

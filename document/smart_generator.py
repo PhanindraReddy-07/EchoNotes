@@ -16,7 +16,6 @@ Generates structured documents with:
 NEW - AI Enhanced Sections:
 - Simplified Explanation
 - Key Takeaways
-- ELI5 (Explain Like I'm 5)
 - Real-world Examples
 - FAQ (Auto-generated Q&A)
 - Vocabulary with Definitions
@@ -48,7 +47,6 @@ class SmartDocumentGenerator:
     NEW: AI-powered content generation for:
     - Simplified explanations
     - Key takeaways
-    - ELI5 explanations
     - Real-world examples
     - Auto-generated FAQ
     - Vocabulary definitions
@@ -187,17 +185,6 @@ class SmartDocumentGenerator:
                 "## 🎯 Simple Explanation",
                 "",
                 ai_content.simplified_explanation,
-                "",
-            ])
-        
-        # AI Enhanced: ELI5
-        if ai_content and ai_content.eli5_explanation:
-            lines.extend([
-                "---",
-                "",
-                "## 👶 Explain Like I'm 5 (ELI5)",
-                "",
-                f"*{ai_content.eli5_explanation}*",
                 "",
             ])
         
@@ -613,13 +600,32 @@ class SmartDocumentGenerator:
 """
         
         for i, q in enumerate(analysis.questions, 1):
+            # Format hint with bullet points if it contains lists or multiple parts
+            hint = q.answer_hint
+            if 'Advantages:' in hint or 'Disadvantages:' in hint:
+                # Format pros/cons with bullets
+                hint = hint.replace('Advantages:', '<br><strong>✓ Advantages:</strong>')
+                hint = hint.replace('Disadvantages:', '<br><strong>✗ Disadvantages:</strong>')
+            elif '...' in hint and len(hint) > 100:
+                # Keep as is for truncated hints
+                pass
+            
+            # Choose icon based on question type
+            type_icons = {
+                'factual': '📝',
+                'conceptual': '💭',
+                'analytical': '🔍',
+                'application': '🎯',
+            }
+            type_icon = type_icons.get(q.question_type, '❓')
+            
             html += f"""                <div class="question-card">
                     <div class="question-text"><strong>{i}.</strong> {q.question}</div>
                     <div class="question-meta">
                         <span class="difficulty {q.difficulty}">{q.difficulty.upper()}</span>
-                        <span>Type: {q.question_type.title()}</span>
+                        <span>{type_icon} {q.question_type.title()}</span>
                     </div>
-                    <div class="hint">💡 Hint: {q.answer_hint}</div>
+                    <div class="hint">💡 <strong>Hint:</strong> {hint}</div>
                 </div>
 """
         
@@ -661,17 +667,6 @@ class SmartDocumentGenerator:
                 <h2 class="section-title"><span class="icon">🎯</span> Simple Explanation</h2>
                 <div class="summary-box" style="background: white; border-left-color: #4caf50;">
                     {ai_content.simplified_explanation}
-                </div>
-            </div>
-"""
-            
-            # ELI5
-            if ai_content.eli5_explanation:
-                html += f"""
-            <div class="section">
-                <h2 class="section-title"><span class="icon">👶</span> Explain Like I'm 5 (ELI5)</h2>
-                <div style="background: #fff8e1; padding: 25px; border-radius: 12px; border-left: 5px solid #ffc107; font-size: 1.15em; font-style: italic;">
-                    "{ai_content.eli5_explanation}"
                 </div>
             </div>
 """
@@ -858,176 +853,177 @@ class SmartDocumentGenerator:
         include_full: bool,
         ai_content: Optional[GeneratedContent] = None
     ) -> str:
-        """Generate PDF document"""
+        """Generate PDF document with multilingual Unicode support (Hindi, Telugu, English)."""
         try:
             from fpdf import FPDF
         except ImportError:
             print("⚠️ PDF requires fpdf2: pip install fpdf2")
             return self._generate_text(analysis, path.replace('.pdf', '.txt'), include_full, ai_content)
         
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        
-        # Set consistent margins - important!
-        pdf.set_left_margin(20)
-        pdf.set_right_margin(20)
-        
-        # Calculate effective width
-        effective_width = pdf.w - 40  # page width minus margins
-        
-        # Helper to safely add text
-        def safe_text(text, max_len=300):
+        # Unicode-safe text cleaner (keeps Hindi/Telugu characters)
+        def safe(text, maxlen=5000):
             if not text:
-                return "N/A"
-            text = str(text)[:max_len]
-            # Remove problematic characters and encode to latin-1
-            try:
-                text = text.encode('latin-1', 'replace').decode('latin-1')
-            except:
-                text = text.encode('ascii', 'replace').decode('ascii')
-            # Remove any remaining problematic chars
-            text = ''.join(c if ord(c) < 256 else '?' for c in text)
-            return text if text.strip() else "N/A"
-        
-        def add_section_title(title):
-            pdf.set_font('Helvetica', 'B', 14)
-            pdf.cell(effective_width, 10, title, ln=True)
-            pdf.ln(2)
-        
-        def add_paragraph(text, font_size=10, italic=False):
-            style = 'I' if italic else ''
-            pdf.set_font('Helvetica', style, font_size)
-            try:
-                pdf.multi_cell(effective_width, 5, safe_text(text, 500))
-            except:
-                pdf.cell(effective_width, 5, safe_text(text, 100), ln=True)
-            pdf.ln(2)
-        
-        # Title
-        pdf.set_font('Helvetica', 'B', 20)
-        pdf.cell(effective_width, 12, safe_text(analysis.title, 80), ln=True, align='C')
-        
-        pdf.set_font('Helvetica', 'I', 10)
-        pdf.cell(effective_width, 8, f"Words: {analysis.word_count} | Reading: {analysis.reading_time_minutes} min", ln=True, align='C')
-        pdf.ln(8)
-        
-        # Executive Summary
-        add_section_title("Executive Summary")
-        add_paragraph(analysis.executive_summary)
-        pdf.ln(4)
-        
-        # AI: Simple Explanation
-        if ai_content and ai_content.simplified_explanation:
-            add_section_title("Simple Explanation")
-            add_paragraph(ai_content.simplified_explanation)
-            pdf.ln(4)
-        
-        # AI: ELI5
-        if ai_content and ai_content.eli5_explanation:
-            add_section_title("Explain Like I'm 5")
-            add_paragraph(ai_content.eli5_explanation, italic=True)
-            pdf.ln(4)
-        
-        # Key Takeaways
-        if ai_content and ai_content.key_takeaways:
-            add_section_title("Key Takeaways")
-            pdf.set_font('Helvetica', '', 10)
-            for i, takeaway in enumerate(ai_content.key_takeaways[:5], 1):
-                text = f"{i}. {safe_text(takeaway, 150)}"
-                try:
-                    pdf.multi_cell(effective_width, 5, text)
-                except:
-                    pdf.cell(effective_width, 5, text[:80], ln=True)
-            pdf.ln(4)
-        
-        # Key Sentences
-        add_section_title("Key Sentences")
-        pdf.set_font('Helvetica', '', 10)
-        for i, sent in enumerate(analysis.key_sentences[:5], 1):
-            text = f"{i}. {safe_text(sent, 200)}"
-            try:
-                pdf.multi_cell(effective_width, 5, text)
-            except:
-                pdf.cell(effective_width, 5, text[:80], ln=True)
-            pdf.ln(1)
-        pdf.ln(4)
-        
-        # Key Concepts
-        add_section_title("Key Concepts")
-        for concept in analysis.concepts[:6]:
-            pdf.set_font('Helvetica', 'B', 11)
-            pdf.cell(effective_width, 6, safe_text(concept.term, 40), ln=True)
-            pdf.set_font('Helvetica', '', 9)
-            add_paragraph(concept.definition, font_size=9)
-        pdf.ln(4)
-        
-        # New page for questions
-        pdf.add_page()
-        
-        # Study Questions
-        add_section_title("Study Questions")
-        for i, q in enumerate(analysis.questions[:6], 1):
-            pdf.set_font('Helvetica', 'B', 10)
-            difficulty = (q.difficulty or "medium").upper()
-            question_text = f"{i}. [{difficulty}] {safe_text(q.question, 120)}"
-            try:
-                pdf.multi_cell(effective_width, 5, question_text)
-            except:
-                pdf.cell(effective_width, 5, question_text[:70], ln=True)
-            
-            if q.answer_hint:
-                pdf.set_font('Helvetica', 'I', 9)
-                hint_text = f"Hint: {safe_text(q.answer_hint, 100)}"
-                try:
-                    pdf.multi_cell(effective_width, 4, hint_text)
-                except:
-                    pdf.cell(effective_width, 4, hint_text[:60], ln=True)
-            pdf.ln(3)
-        
-        # FAQ
-        if ai_content and ai_content.faq:
-            pdf.ln(4)
-            add_section_title("Frequently Asked Questions")
-            for i, qa in enumerate(ai_content.faq[:4], 1):
-                q_text = qa.get('q', '') if isinstance(qa, dict) else str(qa)
-                a_text = qa.get('a', '') if isinstance(qa, dict) else ''
-                
-                pdf.set_font('Helvetica', 'B', 10)
-                try:
-                    pdf.multi_cell(effective_width, 5, f"Q{i}: {safe_text(q_text, 100)}")
-                except:
-                    pdf.cell(effective_width, 5, f"Q{i}: {safe_text(q_text, 60)}", ln=True)
-                
-                pdf.set_font('Helvetica', '', 9)
-                try:
-                    pdf.multi_cell(effective_width, 4, f"A: {safe_text(a_text, 150)}")
-                except:
-                    pdf.cell(effective_width, 4, f"A: {safe_text(a_text, 60)}", ln=True)
-                pdf.ln(2)
-        
-        # Related Topics
-        pdf.ln(4)
-        add_section_title("Related Topics")
-        pdf.set_font('Helvetica', '', 10)
-        topics = ", ".join(analysis.related_topics[:8])
-        pdf.cell(effective_width, 5, safe_text(topics, 150), ln=True)
-        
-        # Footer
-        pdf.ln(10)
-        pdf.set_font('Helvetica', 'I', 8)
-        if ai_content:
-            pdf.cell(effective_width, 4, "* This document includes AI-generated content", ln=True, align='C')
-        pdf.cell(effective_width, 4, "Generated by EchoNotes", ln=True, align='C')
+                return ""
+            s = str(text)[:maxlen]
+            s = ''.join(c for c in s if ord(c) >= 32 or c in '\n\r\t')
+            s = ' '.join(s.split())
+            return s
         
         try:
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            
+            # --- Load a Unicode TTF font (script-aware: Telugu / Hindi / Latin) ---
+            import os, platform
+            from nlp.lang_classifier import get_classifier as _get_lang_clf
+
+            _sample = (analysis.executive_summary or "") + " ".join(
+                getattr(c, 'term', '') for c in analysis.concepts
+            )
+            _script = _get_lang_clf().predict(_sample).primary_script
+            # _script is now: 'telugu', 'devanagari', or 'latin'
+
+            _uni_font = 'Helvetica'
+            _font_loaded = False
+
+            _project_fonts = Path(__file__).parent.parent / "fonts"
+            _win = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+
+            # Priority: project fonts/ folder first, then system fonts by script
+            _candidate_fonts = []
+            if _project_fonts.exists():
+                for f in sorted(_project_fonts.glob("*.ttf"), key=lambda p: (
+                    99 if (_script == "latin" and ("Telugu" in p.name or "Devanagari" in p.name)) else
+                    0  if (_script == "telugu" and "Telugu" in p.name and "Regular" in p.name) else
+                    1  if (_script == "telugu" and "Telugu" in p.name) else
+                    0  if (_script == "devanagari" and ("Devanagari" in p.name or "Hindi" in p.name) and "Regular" in p.name) else
+                    1  if (_script == "devanagari" and ("Devanagari" in p.name or "Hindi" in p.name)) else
+                    0  if ("Regular" in p.name and "Telugu" not in p.name and "Devanagari" not in p.name) else
+                    2
+                )):
+                        _candidate_fonts.append(str(f))
+
+            if platform.system() == 'Windows':
+                _candidate_fonts += [
+                    os.path.join(_win, 'NotoSansTelugu-Regular.ttf'),  # if user installed
+                    os.path.join(_win, 'NirmalaB.ttf'),    # Win10/11 covers Telugu + Hindi
+                    os.path.join(_win, 'NirmalaUI.ttf'),   # covers Hindi, partial Telugu
+                    os.path.join(_win, 'Nirmala.ttf'),
+                    os.path.join(_win, 'arial.ttf'),
+                ]
+            else:
+                _candidate_fonts += [
+                    '/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf',
+                    '/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf',
+                    '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
+                    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                ]
+
+            for fpath in _candidate_fonts:
+                if os.path.isfile(fpath):
+                    try:
+                        pdf.add_font('UniFont', '', fpath, uni=True)
+                        _uni_font = 'UniFont'
+                        _font_loaded = True
+                        print(f"[PDF] ✅ Font loaded: {os.path.basename(fpath)} (script={_script})")
+                        break
+                    except Exception:
+                        continue
+
+            if not _font_loaded:
+                print(f"[PDF] ⚠️  No Unicode font for script='{_script}'. Telugu/Hindi will show as '?'.")
+                print("[PDF]     Fix: run  python download_fonts.py  to install Noto fonts.")
+            
+            pdf.add_page()
+            
+            def _heading(text):
+                pdf.set_font(_uni_font, 'B' if _uni_font == 'Helvetica' else '', 13)
+                pdf.cell(0, 8, safe(text, 100), ln=True)
+                pdf.ln(2)
+            
+            def _body(text):
+                pdf.set_font(_uni_font, '', 10)
+                pdf.multi_cell(0, 5, safe(text, 3000))
+                pdf.ln(3)
+            
+            # Title
+            pdf.set_font(_uni_font, 'B' if _uni_font == 'Helvetica' else '', 18)
+            pdf.cell(0, 10, safe(analysis.title, 80), ln=True, align='C')
+            pdf.set_font(_uni_font, '', 10)
+            pdf.cell(0, 6, f"Words: {analysis.word_count} | Reading: {analysis.reading_time_minutes} min", ln=True, align='C')
+            pdf.ln(8)
+            
+            _heading("EXECUTIVE SUMMARY")
+            _body(analysis.executive_summary)
+            
+            if ai_content and ai_content.simplified_explanation:
+                _heading("SIMPLE EXPLANATION")
+                _body(ai_content.simplified_explanation)
+            
+            if ai_content and ai_content.key_takeaways:
+                _heading("KEY TAKEAWAYS")
+                for i, t in enumerate(ai_content.key_takeaways[:5], 1):
+                    _body(f"{i}. {t}")
+            
+            if analysis.key_sentences:
+                _heading("KEY SENTENCES")
+                for i, s in enumerate(analysis.key_sentences[:10], 1):
+                    _body(f"{i}. {s}")
+            
+            if analysis.concepts:
+                _heading("KEY CONCEPTS")
+                for c in analysis.concepts[:15]:
+                    term = getattr(c, 'term', str(c))
+                    defn = getattr(c, 'definition', '')
+                    _body(f"- {term}: {defn}" if defn else f"- {term}")
+            
+            if analysis.questions:
+                _heading("STUDY QUESTIONS")
+                for q in analysis.questions[:10]:
+                    qtext = getattr(q, 'question', str(q))
+                    diff = getattr(q, 'difficulty', '')
+                    hint = getattr(q, 'answer_hint', '')
+                    _body(f"[{diff.upper()}] {qtext}" if diff else qtext)
+                    if hint:
+                        pdf.set_font(_uni_font, '', 9)
+                        pdf.multi_cell(0, 4, f"   Hint: {safe(hint, 200)}")
+                        pdf.ln(1)
+            
+            if ai_content and ai_content.faq:
+                _heading("FAQ")
+                for qa in ai_content.faq[:8]:
+                    if isinstance(qa, dict):
+                        _body(f"Q: {qa.get('q', qa.get('question',''))}")
+                        _body(f"A: {qa.get('a', qa.get('answer',''))}")
+            
+            if ai_content and ai_content.vocabulary:
+                _heading("VOCABULARY")
+                for v in ai_content.vocabulary[:8]:
+                    if isinstance(v, dict):
+                        _body(f"- {v.get('term','')}: {v.get('meaning','')}")
+            
+            if analysis.related_topics:
+                _heading("RELATED TOPICS")
+                _body(", ".join(str(t) for t in analysis.related_topics[:10]))
+            
+            full_text = getattr(analysis, 'full_text', None) or getattr(analysis, 'text', None) or getattr(analysis, 'transcript', None) or ""
+            if include_full and full_text:
+                _heading("FULL CONTENT")
+                _body(full_text)
+            
+            pdf.ln(5)
+            pdf.set_font(_uni_font, '', 8)
+            if ai_content:
+                pdf.cell(0, 4, "* Includes AI-generated content", ln=True, align='C')
+            pdf.cell(0, 4, f"Generated by EchoNotes | {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align='C')
+            
             pdf.output(path)
+            return path
+            
         except Exception as e:
-            print(f"[PDF] Error saving: {e}")
-            # Fallback to text
+            print(f"[PDF] Error: {e}")
+            import traceback; traceback.print_exc()
             return self._generate_text(analysis, path.replace('.pdf', '.txt'), include_full, ai_content)
-        
-        return path
     
     def _generate_docx(
         self,
@@ -1064,12 +1060,6 @@ class SmartDocumentGenerator:
         if ai_content and ai_content.simplified_explanation:
             doc.add_heading("Simple Explanation", level=1)
             doc.add_paragraph(ai_content.simplified_explanation)
-        
-        # AI Enhanced: ELI5
-        if ai_content and ai_content.eli5_explanation:
-            doc.add_heading("Explain Like I'm 5", level=1)
-            p = doc.add_paragraph()
-            p.add_run(ai_content.eli5_explanation).italic = True
         
         # Key Takeaways
         if ai_content and ai_content.key_takeaways:

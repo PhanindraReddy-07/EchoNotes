@@ -25,6 +25,7 @@ import os
 import sys
 import uuid
 import asyncio
+import time
 import tempfile
 import shutil
 from pathlib import Path
@@ -42,6 +43,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Note: We use lazy imports in endpoints to avoid startup failures
 # The modules are imported inside each endpoint function
+
+# Import database module for persistent history & dashboard
+from api.database import (
+    init_db, create_session, update_session, complete_session,
+    fail_session, get_session, list_sessions, delete_session,
+    get_dashboard_stats,
+)
 
 
 # ============== Configuration ==============
@@ -74,9 +82,65 @@ class Settings:
 settings = Settings()
 
 # Create directories
-for dir_path in [settings.UPLOAD_DIR, settings.OUTPUT_DIR, settings.TEMP_DIR]:
+for dir_path in [settings.UPLOAD_DIR, settings.OUTPUT_DIR, settings.TEMP_DIR, Path("./data")]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
+
+# ============== Helper Functions ==============
+
+def extract_transcription_data(result) -> dict:
+    """
+    Extract data from TranscriptionResult object or dict.
+    
+    Handles both:
+    - TranscriptionResult object (from Transcriber)
+    - Dict (legacy format)
+    """
+    if hasattr(result, 'text'):
+        # It's a TranscriptionResult object
+        return {
+            "text": result.text,
+            "confidence": getattr(result, 'avg_confidence', 0),
+            "duration": getattr(result, 'duration', 0),
+            "word_count": getattr(result, 'word_count', len(result.text.split())),
+            "segments": [u.to_dict() for u in getattr(result, 'utterances', [])] if hasattr(result, 'utterances') else []
+        }
+    else:
+        # It's a dict
+        return {
+            "text": result.get("text", ""),
+            "confidence": result.get("confidence", 0),
+            "duration": result.get("duration", 0),
+            "word_count": len(result.get("text", "").split()),
+            "segments": result.get("segments", [])
+        }
+
+# ============== Transcription Backend ==============
+
+def _get_transcriber(language: str = "en"):
+    """
+    Returns Whisper transcriber if available, falls back to Vosk.
+    Whisper gives significantly better accuracy for Indian English
+    and technical vocabulary.
+    """
+    try:
+        from speech.whisper_transcriber import WhisperTranscriber
+        return WhisperTranscriber(model_size="small"), "whisper"
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"[API] Whisper unavailable ({e}), falling back to Vosk")
+
+    from speech.multilingual import MultilingualTranscriber
+    return MultilingualTranscriber(models_dir="./models"), "vosk"
+
+
+def _transcribe(audio_path: str, language: str = "en") -> dict:
+    """Unified transcription call — uses Whisper or Vosk transparently."""
+    transcriber, backend = _get_transcriber(language)
+    print(f"[API] Transcription backend: {backend}")
+    result = transcriber.transcribe(str(audio_path), language=language)
+    return extract_transcription_data(result)
 
 # ============== Models ==============
 
@@ -227,6 +291,12 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def startup():
+    init_db()
+    print("[EchoNotes] Database initialised ✓")
+
+
 # ============== Helper Functions ==============
 
 def validate_audio_file(file: UploadFile) -> bool:
@@ -256,23 +326,11 @@ async def save_upload_file(file: UploadFile) -> Path:
 async def process_transcription(job_id: str, audio_path: Path, language: str):
     """Background task for transcription"""
     try:
-        from speech.transcriber import SpeechTranscriber
-        
         update_job(job_id, JobStatus.PROCESSING)
         
-        # Initialize transcriber
-        transcriber = SpeechTranscriber()
+        result_data = _transcribe(str(audio_path), language=language)
         
-        # Transcribe
-        result = transcriber.transcribe(str(audio_path))
-        
-        update_job(job_id, JobStatus.COMPLETED, result={
-            "text": result.get("text", ""),
-            "confidence": result.get("confidence", 0),
-            "duration": result.get("duration", 0),
-            "word_count": len(result.get("text", "").split()),
-            "segments": result.get("segments", [])
-        })
+        update_job(job_id, JobStatus.COMPLETED, result=result_data)
         
     except Exception as e:
         import traceback
@@ -291,7 +349,7 @@ async def process_full_pipeline(
 ):
     """Background task for full pipeline processing"""
     try:
-        from speech.transcriber import SpeechTranscriber
+        from speech.transcriber import Transcriber
         from document.smart_generator import SmartDocumentGenerator
         
         update_job(job_id, JobStatus.PROCESSING)
@@ -307,10 +365,9 @@ async def process_full_pipeline(
             except ImportError:
                 print("[API] Audio enhancer not available, skipping enhancement")
         
-        # Step 2: Transcription
-        transcriber = SpeechTranscriber()
-        transcript_result = transcriber.transcribe(str(audio_path))
-        text = transcript_result.get("text", "")
+        # Step 2: Transcription (multilingual)
+        result_data = _transcribe(str(audio_path), language=language)
+        text = result_data["text"]
         
         if not text:
             raise ValueError("Transcription failed - no text generated")
@@ -330,17 +387,32 @@ async def process_full_pipeline(
         
         update_job(job_id, JobStatus.COMPLETED, result={
             "transcript": text,
-            "confidence": transcript_result.get("confidence", 0),
-            "duration": transcript_result.get("duration", 0),
+            "confidence": result_data["confidence"],
+            "duration": result_data["duration"],
             "document_path": str(output_path),
             "format": format.value,
             "ai_enhanced": use_ai
         })
         
+        # Persist to SQLite for dashboard/history
+        try:
+            create_session(job_id, title=title, language=language, fmt=format.value,
+                           use_ai=use_ai, audio_filename=str(audio_path.name))
+            complete_session(job_id, transcript=text, confidence=result_data["confidence"],
+                             word_count=result_data.get("word_count", len(text.split())),
+                             audio_duration=result_data["duration"], analysis={},
+                             document_path=str(output_path), document_format=format.value)
+        except Exception:
+            pass  # Don't fail the job if DB write fails
+        
     except Exception as e:
         import traceback
         traceback.print_exc()
         update_job(job_id, JobStatus.FAILED, error=str(e))
+        try:
+            fail_session(job_id, str(e))
+        except Exception:
+            pass
 
 
 # ============== API Endpoints ==============
@@ -381,7 +453,7 @@ async def health_check():
         pass
     
     try:
-        from speech.transcriber import SpeechTranscriber
+        from speech.transcriber import Transcriber
         modules["speech_transcriber"] = True
     except:
         pass
@@ -498,18 +570,14 @@ async def transcribe_audio_sync(
     filepath = await save_upload_file(file)
     
     try:
-        from speech.transcriber import SpeechTranscriber
-        
-        # Transcribe
-        transcriber = SpeechTranscriber()
-        result = transcriber.transcribe(str(filepath))
+        result_data = _transcribe(str(filepath), language=language)
         
         return TranscriptionResult(
-            text=result.get("text", ""),
-            confidence=result.get("confidence", 0),
-            duration=result.get("duration", 0),
-            word_count=len(result.get("text", "").split()),
-            segments=result.get("segments", [])
+            text=result_data["text"],
+            confidence=result_data["confidence"],
+            duration=result_data["duration"],
+            word_count=result_data["word_count"],
+            segments=result_data["segments"]
         )
     except ImportError as e:
         raise HTTPException(status_code=500, detail=f"Module not found: {str(e)}")
@@ -604,6 +672,109 @@ async def analyze_text_enhanced(request: AnalysisRequest):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Translation Endpoints ==============
+
+class TranslationRequest(BaseModel):
+    """Translation request"""
+    text: str = Field(..., description="Text to translate", max_length=5000)
+    target_language: str = Field(..., description="Target language code (e.g., 'hi', 'ta', 'en')")
+    source_language: Optional[str] = Field(None, description="Source language (auto-detect if not provided)")
+
+class TranslationResponse(BaseModel):
+    """Translation response"""
+    original_text: str
+    translated_text: str
+    source_language: str
+    target_language: str
+    source_language_name: str
+    target_language_name: str
+    confidence: float
+
+@app.post("/api/translate", response_model=TranslationResponse, tags=["Translation"])
+async def translate_text(request: TranslationRequest):
+    """
+    Translate short text between languages (offline).
+    
+    Supported languages:
+    - Indian: hi (Hindi), ta (Tamil), te (Telugu), bn (Bengali), mr (Marathi), gu (Gujarati), ur (Urdu)
+    - European: fr (French), de (German), es (Spanish), it (Italian), pt (Portuguese), ru (Russian)
+    - Asian: zh (Chinese), ja (Japanese), ar (Arabic)
+    
+    Note: First translation may be slow as models are downloaded (~100-500MB per language pair).
+    """
+    try:
+        from nlp.translator import OfflineTranslator
+        
+        translator = OfflineTranslator()
+        result = translator.translate(
+            text=request.text,
+            target_lang=request.target_language,
+            source_lang=request.source_language
+        )
+        
+        # Get language names
+        lang_codes = translator.LANGUAGE_CODES
+        source_name = lang_codes.get(result.source_language, result.source_language)
+        target_name = lang_codes.get(result.target_language, result.target_language)
+        
+        return TranslationResponse(
+            original_text=result.original_text,
+            translated_text=result.translated_text,
+            source_language=result.source_language,
+            target_language=result.target_language,
+            source_language_name=source_name,
+            target_language_name=target_name,
+            confidence=result.confidence
+        )
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500, 
+            detail="Translation requires: pip install transformers sentencepiece"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/translate/languages", tags=["Translation"])
+async def get_supported_languages():
+    """Get list of supported languages for translation"""
+    try:
+        from nlp.translator import OfflineTranslator
+        
+        translator = OfflineTranslator()
+        languages = translator.get_supported_languages()
+        pairs = translator.get_available_pairs()
+        
+        return {
+            "languages": languages,
+            "available_pairs": [{"from": p[0], "to": p[1]} for p in pairs],
+            "note": "Translation works offline after initial model download"
+        }
+    except ImportError:
+        return {
+            "languages": {},
+            "available_pairs": [],
+            "error": "Translation module not available. Install: pip install transformers sentencepiece"
+        }
+
+@app.post("/api/detect-language", tags=["Translation"])
+async def detect_language(text: str = Form(..., description="Text to detect language of")):
+    """Detect the language of input text"""
+    try:
+        from nlp.translator import OfflineTranslator
+        
+        translator = OfflineTranslator()
+        detected = translator.detect_language(text)
+        lang_name = translator.LANGUAGE_CODES.get(detected, "Unknown")
+        
+        return {
+            "text_sample": text[:100] + "..." if len(text) > 100 else text,
+            "detected_language": detected,
+            "language_name": lang_name
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -721,14 +892,13 @@ async def process_audio_sync(
     job_id = str(uuid.uuid4())[:8]
     
     try:
-        from speech.transcriber import SpeechTranscriber
+        from speech.transcriber import Transcriber
         from nlp.smart_analyzer import SmartAnalyzer
         from document.smart_generator import SmartDocumentGenerator
         
-        # Step 1: Transcribe
-        transcriber = SpeechTranscriber()
-        transcript_result = transcriber.transcribe(str(filepath))
-        text = transcript_result.get("text", "")
+        # Step 1: Transcribe (multilingual)
+        result_data = _transcribe(str(filepath), language=language)
+        text = result_data["text"]
         
         if not text:
             raise HTTPException(status_code=400, detail="Transcription failed")
@@ -757,13 +927,25 @@ async def process_audio_sync(
             "document_path": str(output_path)
         })
         
+        # Persist to SQLite for dashboard/history
+        try:
+            create_session(job_id, title=title, language=language, fmt=format.value,
+                           use_ai=use_ai, audio_filename=str(filepath.name))
+            complete_session(job_id, transcript=text, confidence=result_data["confidence"],
+                             word_count=len(text.split()), audio_duration=result_data["duration"],
+                             analysis={"executive_summary": analysis.executive_summary,
+                                       "key_concepts": [c.term for c in analysis.concepts]},
+                             document_path=str(output_path), document_format=format.value)
+        except Exception:
+            pass
+        
         return {
             "job_id": job_id,
             "status": "completed",
             "transcript": {
                 "text": text,
-                "confidence": transcript_result.get("confidence", 0),
-                "duration": transcript_result.get("duration", 0),
+                "confidence": result_data["confidence"],
+                "duration": result_data["duration"],
                 "word_count": len(text.split())
             },
             "analysis": {
@@ -772,7 +954,8 @@ async def process_audio_sync(
                 "related_topics": analysis.related_topics
             },
             "document": {
-                "path": f"/api/download/{job_id}",
+                "job_id": job_id,
+                "document_path": f"/api/download/{job_id}",
                 "format": format.value,
                 "filename": output_filename
             }
@@ -896,6 +1079,54 @@ async def cleanup_old_files(max_age_hours: int = 24):
                     deleted[key] += 1
     
     return {"message": "Cleanup completed", "deleted": deleted}
+
+
+# ============== History & Dashboard Endpoints ==============
+
+@app.get("/api/dashboard", tags=["Dashboard"])
+async def dashboard():
+    """Dashboard analytics: totals, averages, per-language/format breakdown, 7-day activity."""
+    return get_dashboard_stats()
+
+
+@app.get("/api/history", tags=["History"])
+async def get_history(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = Query(None),
+    language: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("created_at"),
+    sort_order: str = Query("desc"),
+):
+    """List processing sessions with filtering, search, and pagination."""
+    return list_sessions(
+        limit=limit, offset=offset,
+        status=status, language=language, search=search,
+        sort_by=sort_by, sort_order=sort_order,
+    )
+
+
+@app.get("/api/history/{session_id}", tags=["History"])
+async def get_history_detail(session_id: str):
+    """Get full session details including transcript and analysis."""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@app.delete("/api/history/{session_id}", tags=["History"])
+async def delete_history_entry(session_id: str):
+    """Delete a session and its generated document file."""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    doc = session.get("document_path")
+    if doc:
+        Path(doc).unlink(missing_ok=True)
+    delete_session(session_id)
+    return {"message": f"Session {session_id} deleted"}
 
 
 # ============== WebSocket for Real-time Updates ==============

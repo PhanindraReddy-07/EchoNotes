@@ -1,1 +1,7 @@
 /models
+/outputs
+venv/
+*.log
+*.csv
+uploads/
+*.h5

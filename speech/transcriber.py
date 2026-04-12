@@ -220,16 +220,110 @@ class Transcriber:
         """Set/change the model"""
         self._load_model(model_path)
     
+    @classmethod
+    def get_or_download_model(cls, model_key: str = 'en-us-small') -> str:
+        """
+        Get model path, downloading if necessary.
+        
+        Checks in order:
+        1. Project's models/ folder
+        2. User cache folder
+        3. Downloads if not found
+        
+        Args:
+            model_key: Key from MODEL_URLS (default: 'en-us-small' ~50MB)
+            
+        Returns:
+            Path to the model directory
+        """
+        import urllib.request
+        import zipfile
+        import os
+        
+        # Model name mapping
+        model_name_map = {
+            'en-us': 'vosk-model-en-us-0.22',
+            'en-us-small': 'vosk-model-small-en-us-0.15',
+            'en-in': 'vosk-model-en-in-0.5',
+            'en-in-small': 'vosk-model-small-en-in-0.4',
+            'hi': 'vosk-model-hi-0.22',
+            'hi-small': 'vosk-model-small-hi-0.22',
+            'te-small': 'vosk-model-small-te-0.42',
+        }
+        
+        model_name = model_name_map.get(model_key, 'vosk-model-small-en-us-0.15')
+        
+        # Search locations in order of priority
+        search_paths = [
+            # 1. Project's models/ folder (relative to this file)
+            Path(__file__).parent.parent / "models",
+            # 2. Current working directory models/
+            Path.cwd() / "models",
+            # 3. echonotes/models/ 
+            Path.cwd() / "echonotes" / "models",
+            # 4. User cache
+            Path.home() / ".cache" / "echonotes" / "vosk-models",
+        ]
+        
+        # Check each location for any vosk model
+        for search_dir in search_paths:
+            if not search_dir.exists():
+                continue
+            
+            # Look for exact model name
+            exact_path = search_dir / model_name
+            if exact_path.exists():
+                print(f"[Transcriber] Found model at {exact_path}")
+                return str(exact_path)
+            
+            # Look for any vosk model in the directory
+            for item in search_dir.iterdir():
+                if item.is_dir() and 'vosk-model' in item.name:
+                    print(f"[Transcriber] Found model at {item}")
+                    return str(item)
+        
+        # Not found - download to cache
+        cache_dir = Path.home() / ".cache" / "echonotes" / "vosk-models"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        model_path = cache_dir / model_name
+        
+        if model_key not in cls.MODEL_URLS:
+            model_key = 'en-us-small'
+        
+        url = cls.MODEL_URLS[model_key]
+        zip_path = cache_dir / f"{model_name}.zip"
+        
+        print(f"[Transcriber] No model found. Downloading from {url}...")
+        print(f"[Transcriber] This may take a few minutes (~50MB)...")
+        
+        try:
+            urllib.request.urlretrieve(url, str(zip_path))
+            print(f"[Transcriber] Download complete. Extracting...")
+            
+            with zipfile.ZipFile(str(zip_path), 'r') as zip_ref:
+                zip_ref.extractall(str(cache_dir))
+            
+            os.remove(str(zip_path))
+            
+            print(f"[Transcriber] Model ready at {model_path}")
+            return str(model_path)
+            
+        except Exception as e:
+            print(f"[Transcriber] Failed to download model: {e}")
+            print(f"[Transcriber] Please download manually from: https://alphacephei.com/vosk/models")
+            raise
+    
     def transcribe(
         self,
-        audio_data,  # AudioData from audio module
-        show_progress: bool = True
+        audio_input,  # Can be AudioData object OR file path string
+        show_progress: bool = True,
+        language: str = "en"
     ) -> TranscriptionResult:
         """
         Transcribe audio to text
         
         Args:
-            audio_data: AudioData object from audio module
+            audio_input: AudioData object OR path to audio file (str/Path)
             show_progress: Show progress during transcription
             
         Returns:
@@ -238,8 +332,17 @@ class Transcriber:
         if self.model is None:
             raise RuntimeError("No model loaded. Call set_model() first or provide model_path in constructor.")
         
+        # Handle file path input
+        if isinstance(audio_input, (str, Path)):
+            audio_data = self._load_audio_file(str(audio_input))
+        else:
+            audio_data = audio_input
+        
         samples = audio_data.samples
         sr = audio_data.sample_rate
+        
+        # Preprocess audio for better transcription
+        samples = self._preprocess_audio(samples)
         
         # Ensure correct sample rate
         if sr != self.sample_rate:
@@ -294,9 +397,145 @@ class Transcriber:
             utterances=utterances,
             words=all_words,
             duration=audio_data.duration,
-            language="en",
+            language=language,
             model_name=self.model_name
         )
+    
+    def _load_audio_file(self, filepath: str):
+        """
+        Load audio file and return AudioData-like object
+        
+        Args:
+            filepath: Path to audio file (wav, mp3, etc.)
+            
+        Returns:
+            Object with samples, sample_rate, duration attributes
+        """
+        from dataclasses import dataclass
+        import wave
+        
+        @dataclass
+        class SimpleAudioData:
+            samples: np.ndarray
+            sample_rate: int
+            duration: float
+        
+        filepath = Path(filepath)
+        
+        if not filepath.exists():
+            raise FileNotFoundError(f"Audio file not found: {filepath}")
+        
+        # Handle WAV files
+        if filepath.suffix.lower() == '.wav':
+            with wave.open(str(filepath), 'rb') as wf:
+                sample_rate = wf.getframerate()
+                n_frames = wf.getnframes()
+                n_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                
+                # Read raw bytes
+                raw_data = wf.readframes(n_frames)
+                
+                # Convert to numpy array
+                if sample_width == 2:
+                    dtype = np.int16
+                elif sample_width == 4:
+                    dtype = np.int32
+                else:
+                    dtype = np.int16
+                
+                samples = np.frombuffer(raw_data, dtype=dtype)
+                
+                # Convert to mono if stereo
+                if n_channels == 2:
+                    samples = samples.reshape(-1, 2).mean(axis=1)
+                
+                # Convert to float32 normalized
+                samples = samples.astype(np.float32) / np.iinfo(dtype).max
+                
+                duration = n_frames / sample_rate
+                
+                return SimpleAudioData(
+                    samples=samples,
+                    sample_rate=sample_rate,
+                    duration=duration
+                )
+        
+        # Handle other formats using pydub (preferred) or ffmpeg
+        else:
+            import tempfile
+            
+            # Try pydub first (handles many formats without external ffmpeg)
+            try:
+                from pydub import AudioSegment
+                
+                # Load with pydub
+                audio = AudioSegment.from_file(str(filepath))
+                
+                # Convert to mono, 16kHz
+                audio = audio.set_channels(1).set_frame_rate(16000)
+                
+                # Export to temporary WAV
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                    tmp_path = tmp.name
+                
+                try:
+                    audio.export(tmp_path, format='wav')
+                    return self._load_audio_file(tmp_path)
+                finally:
+                    if Path(tmp_path).exists():
+                        Path(tmp_path).unlink()
+                        
+            except ImportError:
+                pass  # pydub not available, try ffmpeg
+            except Exception as pydub_error:
+                print(f"[Transcriber] pydub failed: {pydub_error}, trying ffmpeg...")
+            
+            # Fallback to ffmpeg subprocess
+            try:
+                import subprocess
+                import shutil
+                
+                # Check if ffmpeg is available
+                ffmpeg_path = shutil.which('ffmpeg')
+                if not ffmpeg_path:
+                    raise FileNotFoundError(
+                        "FFmpeg is required to process non-WAV audio files.\n"
+                        "The browser recorded in a format that requires FFmpeg to decode.\n\n"
+                        "Solutions:\n"
+                        "  1. Install FFmpeg: https://ffmpeg.org/download.html\n"
+                        "     - Download, extract, and add bin folder to PATH\n"
+                        "     - Or use: winget install ffmpeg (Windows 10+)\n"
+                        "  2. Use the updated frontend that records in WAV format\n"
+                        "  3. Upload .wav files directly instead of recording"
+                    )
+                
+                # Convert to WAV using ffmpeg
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                    tmp_path = tmp.name
+                
+                try:
+                    subprocess.run([
+                        ffmpeg_path, '-i', str(filepath),
+                        '-ar', '16000', '-ac', '1', '-y',
+                        tmp_path
+                    ], capture_output=True, check=True)
+                    
+                    # Now read the converted WAV
+                    return self._load_audio_file(tmp_path)
+                finally:
+                    if Path(tmp_path).exists():
+                        Path(tmp_path).unlink()
+                        
+            except FileNotFoundError as e:
+                raise ValueError(str(e))
+            except Exception as e:
+                raise ValueError(
+                    f"Could not load audio file: {filepath}\n"
+                    f"Supported: .wav (directly), other formats require ffmpeg or pydub\n"
+                    f"Install pydub: pip install pydub\n"
+                    f"Error: {e}"
+                )
     
     def transcribe_stream(
         self,
@@ -419,6 +658,71 @@ class Transcriber:
             )
         
         return words, utterance
+    
+    def _preprocess_audio(self, samples: np.ndarray) -> np.ndarray:
+        """
+        Preprocess audio for better transcription quality
+        
+        Applies:
+        1. DC offset removal
+        2. High-pass filter (remove low-frequency rumble)
+        3. Normalization (improve volume)
+        4. Simple noise gate (reduce background noise)
+        5. Voice activity detection (skip silent parts)
+        """
+        # Ensure float32
+        samples = samples.astype(np.float32)
+        
+        # Check minimum length (at least 0.5 seconds at 16kHz)
+        min_samples = 8000
+        if len(samples) < min_samples:
+            print(f"[Transcriber] Warning: Audio is very short ({len(samples)} samples)")
+        
+        # 1. Remove DC offset
+        samples = samples - np.mean(samples)
+        
+        # 2. Simple high-pass filter (remove frequencies below 80Hz)
+        # Use a simple IIR filter approximation
+        try:
+            alpha = 0.97  # High-pass filter coefficient
+            filtered = np.zeros_like(samples)
+            prev_sample = 0
+            prev_filtered = 0
+            for i in range(len(samples)):
+                filtered[i] = alpha * (prev_filtered + samples[i] - prev_sample)
+                prev_sample = samples[i]
+                prev_filtered = filtered[i]
+            samples = filtered
+        except Exception:
+            pass  # Skip filtering if error
+        
+        # 3. Calculate RMS for adaptive thresholds
+        rms = np.sqrt(np.mean(samples ** 2))
+        
+        # 4. Normalize audio (boost quiet audio)
+        max_amplitude = np.max(np.abs(samples))
+        if max_amplitude > 0.001:  # Only normalize if there's actual audio
+            # Target peak amplitude of 0.9
+            target_amplitude = 0.9
+            if max_amplitude < target_amplitude:
+                gain = target_amplitude / max_amplitude
+                # Limit gain based on RMS (less gain for noisy audio)
+                max_gain = 8.0 if rms > 0.02 else 15.0
+                gain = min(gain, max_gain)
+                samples = samples * gain
+                print(f"[Transcriber] Audio normalized (gain: {gain:.2f}x, RMS: {rms:.4f})")
+        else:
+            print("[Transcriber] Warning: Audio appears to be silent or very quiet")
+        
+        # 5. Adaptive noise gate based on RMS
+        noise_threshold = max(0.005, rms * 0.15)  # 15% of RMS or minimum
+        mask = np.abs(samples) < noise_threshold
+        samples[mask] = 0.0
+        
+        # Clip to valid range
+        samples = np.clip(samples, -1.0, 1.0)
+        
+        return samples
     
     def _to_pcm_bytes(self, samples: np.ndarray) -> bytes:
         """Convert float samples to 16-bit PCM bytes"""
