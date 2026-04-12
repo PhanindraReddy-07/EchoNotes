@@ -1,7 +1,44 @@
-/models
-/outputs
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
 venv/
+env/
+.venv/
+
+# Logs
 *.log
-*.csv
+
+# Data / outputs
+outputs/
 uploads/
+data/
+*.db
+
+# ML models
+models/
 *.h5
+*.pt
+*.pth
+*.ckpt
+
+# CSV / datasets (optional - ignore if large)
+*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# Build / temp
+*.tmp
+*.temp
